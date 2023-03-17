@@ -23,7 +23,7 @@ Group={USER}
 PIDFile=/run/nvidia-fan-control.pid
 Environment=DISPLAY={DISPLAY}
 Environment=XAUTHORITY={XAUTHORITY}
-ExecStart=/usr/bin/python3 {FILEPATH} --target-temperature {TARGET_TEMPERATURE} --interval-secs {INTERVAL_SECS} --log-level INFO
+ExecStart=/usr/bin/python3 {FILEPATH} --target-temperature {TARGET_TEMPERATURE} --interval-secs {INTERVAL_SECS} --log-level INFO --minimum-fan-percent {MINIMUM_FAN_PERCENT}
 Restart=always
 RestartSec=10
 
@@ -213,12 +213,12 @@ def set_fan_speed(index: int, fan_speed: int) -> None:
     run_cmd(['nvidia-settings', '--assign', config])
 
 
-def create_service_file(target_temperature: int = 60, interval_secs: int = 2) -> None:
+def create_service_file(target_temperature: int = 60, interval_secs: int = 2, minimum_fan_percent: int = 10) -> None:
     script_filepath = os.path.abspath(__file__)
     service_filepath = os.path.join(os.path.dirname(script_filepath), 'nvidia-fan-controller.service')
 
     content = SERVICE_FILE_TEMPLATE.format(
-        FILEPATH=script_filepath, TARGET_TEMPERATURE=target_temperature, INTERVAL_SECS=interval_secs, **os.environ)
+        FILEPATH=script_filepath, TARGET_TEMPERATURE=target_temperature, INTERVAL_SECS=interval_secs, MINIMUM_FAN_PERCENT=minimum_fan_percent, **os.environ)
 
     logger.info("Creating/replacing service file at: %s", service_filepath)
     logger.debug("Creating/replacing service file content:\n%r", content)
@@ -232,6 +232,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--target-temperature', type=int, default=80, help="target max temperature (Celcius)")
+    parser.add_argument('--minimum-fan-percent', type=int, default=10, help="min fan speed percent (useful if your fans are noisy)")
     parser.add_argument('--interval-secs', type=int, default=2, help="number of seconds between consecutive updates")
     parser.add_argument('--log-level', choices=('DEBUG', 'INFO', 'WARN'), default='INFO', help="verbosity level")
     parser.add_argument('--create-service-file', action='store_true', help="create service file and exit")
@@ -239,8 +240,11 @@ def main() -> None:
 
     logging.basicConfig(level=getattr(logging, args.log_level))
 
+    if args.minimum_fan_percent < 0 or args.minimum_fan_percent > 100:
+        raise RuntimeError("min fan percent must be between 0 and 100")
+
     if args.create_service_file:
-        create_service_file(target_temperature=args.target_temperature, interval_secs=args.interval_secs)
+        create_service_file(target_temperature=args.target_temperature, interval_secs=args.interval_secs, minimum_fan_percent=args.minimum_fan_percent)
         sys.exit()
 
     if not get_measurements():
@@ -248,7 +252,7 @@ def main() -> None:
 
     # give each GPU its own controller
     controllers = {
-        index: PIDController(x_target=args.target_temperature, u_min=10, u_max=100, u_start=max(temp / 0.9, speed), e_total_min=-10)
+        index: PIDController(x_target=args.target_temperature, u_min=args.minimum_fan_percent, u_max=100, u_start=max(temp / 0.9, speed), e_total_min=-10)
         for index, temp, speed in get_measurements()}
 
     with ManualFanControl():
